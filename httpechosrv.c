@@ -55,6 +55,59 @@ void * thread(void * vargp)
     return NULL;
 }
 
+void serve_file(int connfd, const char *filename) {
+    size_t n;
+    char buf[MAXLINE];
+    char httpmsg[MAXBUF];
+    struct stat filestat;
+
+    // Check if the file exists
+    if (stat(filename, &filestat) < 0) {
+        // If the file doesn't exist, return a 404 Not Found response
+        sprintf(httpmsg, "HTTP/1.1 404 Not Found\r\n\r\n");
+        write(connfd, httpmsg, strlen(httpmsg));
+        return;
+    }
+    printf("\n Filename in serve_file %s: ", filename);
+
+    // Determine the Content-Type based on the file's extension
+    const char *extension = strrchr(filename, '.');
+    const char *content_type = "application/octet-stream";  // Default to binary data
+
+    if (extension) {
+        if (strcmp(extension, ".jpg") == 0 || strcmp(extension, ".jpeg") == 0) {
+            content_type = "image/jpeg";
+        } else if (strcmp(extension, ".png") == 0) {
+            content_type = "image/png";
+        } else if (strcmp(extension, ".gif") == 0) {
+            content_type = "image/gif";
+        } else if (strcmp(extension, ".pdf") == 0) {
+            content_type = "application/pdf";
+        } else if (strcmp(extension, ".html") == 0) {
+            content_type = "text/html";
+        } else if (strcmp(extension, ".css") == 0) {
+            content_type = "text/css";
+        } else if (strcmp(extension, ".js") == 0) {
+            content_type = "application/javascript";
+        } else if (strcmp(extension, ".txt") == 0) {
+            content_type = "text/plain";
+        }
+        // Add more file types and MIME types as needed
+    }
+
+    // Send an HTTP 200 OK response with the correct Content-Type
+    sprintf(httpmsg, "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n\r\n", content_type, filestat.st_size);
+    write(connfd, httpmsg, strlen(httpmsg));
+
+    // Open and send the file
+    int filefd = open(filename, O_RDONLY);
+    while ((n = read(filefd, buf, MAXLINE)) > 0) {
+        write(connfd, buf, n);
+    }
+    close(filefd);
+}
+
+
 /*
  * echo - read and echo text lines until client closes connection
  */
@@ -65,32 +118,74 @@ void echo(int connfd)
     // char httpmsg[]="HTTP/1.1 200 Document Follows\r\nContent-Type:text/html\r\nContent-Length:32\r\n\r\n<html><h1>Hello CSCI4273 Course!</h1>"; 
     char httpmsg[MAXBUF];
     struct stat filestat;
-    char *filename = "www/index.html"; // Path to the index.html file
-
-    // Check if the file exists
-    if (stat(filename, &filestat) < 0) {
-        // If the file doesn't exist, return a 404 Not Found response
-        sprintf(httpmsg, "HTTP/1.1 404 Not Found\r\n\r\n");
-        write(connfd, httpmsg, strlen(httpmsg));
-        return;
-    }
+    char request_uri[MAXLINE];
 
     n = read(connfd, buf, MAXLINE);
     printf("server received the following request:\n%s\n",buf);
-
-    strcpy(buf,httpmsg);
-    printf("server returning a http message with the following content.\n%s\n",buf);
-    write(connfd, buf,strlen(httpmsg));
-
-    sprintf(httpmsg, "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: %ld\r\n\r\n", filestat.st_size);
-    write(connfd, httpmsg, strlen(httpmsg));
-
-    // Open and send the file
-    int filefd = open(filename, O_RDONLY);
-    while ((n = read(filefd, buf, MAXLINE)) > 0) {
-        write(connfd, buf, n);
+    if (n <= 0) {
+        return;
     }
-    close(filefd);
+
+    // Retrieving request URI from buf ----
+    char* getLine = strstr(buf, "GET ");
+    if (getLine == NULL) {
+        printf("Invalid request: No 'GET' line\n");
+        return;
+    }
+
+    // Move the pointer past "GET "
+    getLine += 4;
+
+    // Find the end of the request URI (ends with a space)
+    char* uriEnd = strchr(getLine, ' ');
+    if (uriEnd == NULL) {
+        printf("Invalid request: URI not found\n");
+        return;
+    }
+
+    // Calculate the length of the URI
+    int uriLength = uriEnd - getLine;
+
+    // Allocate a buffer to store the URI and copy it
+    char requestURI[1024]; // Adjust the buffer size as needed
+    strncpy(requestURI, getLine, uriLength);
+    requestURI[uriLength] = '\0'; // Null-terminate the string
+    memmove(requestURI, requestURI + 1, strlen(requestURI));
+
+    printf("Request URI: %s\n", requestURI);
+
+    // Request URI retrieval complete ----
+
+    
+
+    // Parse the request to extract the Request URI
+
+    if (strcmp(requestURI, "") == 0) {
+        // Serve the root page
+        serve_file(connfd, "www/index.html");
+    } else if (strcmp(requestURI, "www") == 0) {
+        // Serve another page based on the URI
+        printf("\nIn this case\n");
+        serve_file(connfd, "www/index.html");
+    } else {
+        // Handle other cases or return a 404 Not Found response
+        printf("\nIn ekse case\n");
+        // Add www/ for nested requests ----
+        char prefix[] = "www/";
+        if (strncmp(requestURI, prefix, sizeof(prefix)) != 0) {
+            // "www/" is not present, so add it
+            if (strlen(requestURI) + strlen(prefix) < sizeof(requestURI)) {
+                memmove(requestURI + strlen(prefix), requestURI, strlen(requestURI) + 1);
+                strncpy(requestURI, prefix, sizeof(prefix) - 1);
+            } else {
+                // Handle insufficient buffer space error
+                printf("Buffer space insufficient for prefix addition.\n");
+            }
+        }
+        printf("\nRequest in ekle case is %s\n", requestURI);
+        // Adding www/ done ----
+        serve_file(connfd, requestURI);
+    }
 }
 
 /* 
