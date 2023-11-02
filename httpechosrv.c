@@ -55,12 +55,12 @@ void * thread(void * vargp)
     return NULL;
 }
 
-void serve_file(int connfd, const char *filename) {
+void serve_file(int connfd, const char *filename, int postActive) {
     size_t n;
     char buf[MAXLINE];
     char httpmsg[MAXBUF];
     struct stat filestat;
-
+    
     // Check if the file exists
     if (stat(filename, &filestat) < 0) {
         // If the file doesn't exist, return a 404 Not Found response
@@ -72,6 +72,7 @@ void serve_file(int connfd, const char *filename) {
 
     // Determine the Content-Type based on the file's extension
     const char *extension = strrchr(filename, '.');
+    int isHtml = -1;
     const char *content_type = "application/octet-stream";  // Default to binary data
 
     if (extension) {
@@ -85,6 +86,7 @@ void serve_file(int connfd, const char *filename) {
             content_type = "application/pdf";
         } else if (strcmp(extension, ".html") == 0) {
             content_type = "text/html";
+            isHtml = 1;
         } else if (strcmp(extension, ".css") == 0) {
             content_type = "text/css";
         } else if (strcmp(extension, ".js") == 0) {
@@ -98,13 +100,49 @@ void serve_file(int connfd, const char *filename) {
     // Send an HTTP 200 OK response with the correct Content-Type
     sprintf(httpmsg, "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n\r\n", content_type, filestat.st_size);
     write(connfd, httpmsg, strlen(httpmsg));
+    
+    // POST only
+    if (postActive == 1 && isHtml == 1) {
+        FILE *file = fopen(filename, "r");
+        if (file == NULL) {
+            perror("Failed to open file");
+            return;
+        }
+        char content[10000];  // Adjust the buffer size as needed
+        char line[10000];     // Adjust the buffer size as needed
+        int line_count = 0;
+        char *post_data = "<h1>This is POST data.</h1>";
 
-    // Open and send the file
+        while (fgets(line, sizeof(line), file) != NULL) {
+            line_count++;
+            strcat(content, line);
+
+            if (line_count == 2) {
+                // Insert the POST data on the third line
+                strcat(content, post_data);
+                strcat(content, "\n");
+            }
+        }
+        fclose(file);
+        file = fopen(filename, "w");
+        if (file == NULL) {
+            perror("Failed to open file for writing");
+            return;
+        }
+
+        // Write the modified content back to the file
+        fputs(content, file);
+
+        // Close the file
+        fclose(file);
+    }
     int filefd = open(filename, O_RDONLY);
     while ((n = read(filefd, buf, MAXLINE)) > 0) {
-        write(connfd, buf, n);
+    write(connfd, buf, n);
     }
     close(filefd);
+    // Open and send the file
+
 }
 
 
@@ -119,39 +157,66 @@ void echo(int connfd)
     char httpmsg[MAXBUF];
     struct stat filestat;
     char request_uri[MAXLINE];
+    int postActive = -1;
 
     n = read(connfd, buf, MAXLINE);
     printf("server received the following request:\n%s\n",buf);
     if (n <= 0) {
         return;
     }
-
+    
     // Retrieving request URI from buf ----
     char* getLine = strstr(buf, "GET ");
-    if (getLine == NULL) {
-        printf("Invalid request: No 'GET' line\n");
+    char* postLine = strstr(buf, "POST ");
+    if (getLine == NULL && postLine == NULL) {
+        printf("Invalid request: No 'GET' or 'POST' line\n");
         return;
     }
 
     // Move the pointer past "GET "
-    getLine += 4;
+    if (postLine == NULL) {
+        getLine += 4;
+    }
+    if (getLine == NULL) {
+        postActive = 1;
+        postLine +=5;
+    }
 
     // Find the end of the request URI (ends with a space)
-    char* uriEnd = strchr(getLine, ' ');
+    char* uriEnd;
+    if (postLine == NULL) {
+        uriEnd = strchr(getLine, ' ');
+    }
+    if (getLine == NULL) {
+        uriEnd = strchr(postLine, ' ');
+    }
+
     if (uriEnd == NULL) {
         printf("Invalid request: URI not found\n");
         return;
     }
-
+    int uriLength;
     // Calculate the length of the URI
-    int uriLength = uriEnd - getLine;
-
+    if (postLine == NULL) {
+        uriLength = uriEnd - getLine;
+    }
+    if (getLine == NULL) {
+        uriLength = uriEnd - postLine;
+    }
+    //int uriLength = uriEnd - getLine;
+    
     // Allocate a buffer to store the URI and copy it
     char requestURI[1024]; // Adjust the buffer size as needed
-    strncpy(requestURI, getLine, uriLength);
+    if (postLine == NULL) {
+        strncpy(requestURI, getLine, uriLength);
+    }
+    if (getLine == NULL) {
+        strncpy(requestURI, postLine, uriLength);
+    }
+    //strncpy(requestURI, getLine, uriLength);
     requestURI[uriLength] = '\0'; // Null-terminate the string
     memmove(requestURI, requestURI + 1, strlen(requestURI));
-
+    
     printf("Request URI: %s\n", requestURI);
 
     // Request URI retrieval complete ----
@@ -162,17 +227,17 @@ void echo(int connfd)
 
     if (strcmp(requestURI, "") == 0) {
         // Serve the root page
-        serve_file(connfd, "www/index.html");
+        serve_file(connfd, "www/index.html", postActive);
     } else if (strcmp(requestURI, "www") == 0) {
         // Serve another page based on the URI
         printf("\nIn this case\n");
-        serve_file(connfd, "www/index.html");
+        serve_file(connfd, "www/index.html", postActive);
     } else {
         // Handle other cases or return a 404 Not Found response
         printf("\nIn ekse case\n");
         // Add www/ for nested requests ----
         char prefix[] = "www/";
-        if (strncmp(requestURI, prefix, sizeof(prefix)) != 0) {
+        if (strncmp(requestURI, prefix, sizeof(prefix)-1) != 0) {
             // "www/" is not present, so add it
             if (strlen(requestURI) + strlen(prefix) < sizeof(requestURI)) {
                 memmove(requestURI + strlen(prefix), requestURI, strlen(requestURI) + 1);
@@ -184,7 +249,7 @@ void echo(int connfd)
         }
         printf("\nRequest in ekle case is %s\n", requestURI);
         // Adding www/ done ----
-        serve_file(connfd, requestURI);
+        serve_file(connfd, requestURI, postActive);
     }
 }
 
