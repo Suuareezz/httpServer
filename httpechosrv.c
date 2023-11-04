@@ -21,7 +21,7 @@
 #define LISTENQ  1024  /* second argument to listen() */
 
 int open_listenfd(int port);
-void echo(int connfd);
+void echo(int connfd, char *buf, size_t n);
 void *thread(void *vargp);
 
 int main(int argc, char **argv) 
@@ -47,10 +47,37 @@ int main(int argc, char **argv)
 /* thread routine */
 void * thread(void * vargp) 
 {  
-    int connfd = *((int *)vargp);
+    int connfd = *((int *)vargp), prev_connfd = -1;
+    char buf[MAXLINE]; 
+    size_t n;
     pthread_detach(pthread_self()); 
     free(vargp);
-    echo(connfd);
+    time_t start_time = time(NULL);
+    while (1) {
+        printf("\nConnfd: %d", connfd);
+        if ((n = read(connfd, buf, MAXLINE)) > 0) {
+            start_time = time(NULL);
+            printf("\nIn starttime inc loop\n");
+        } 
+        // Check if the "Connection: Keep-alive" header is present
+        if (strstr(buf, "Connection: Keep-alive") != NULL) {
+            printf("\nIn keep alive string check\n");
+            // Check if 10 seconds have not passed since the connection was established
+            if (time(NULL) - start_time < 10) {
+                printf("\nbelow 10 secs\n");
+                // Pass the buf to the echo function and show it
+                echo(connfd, buf, n);
+            } else {
+                // Connection timeout, close the connection
+                break;
+            }
+        } else {
+            echo(connfd, buf, n);
+            // Close the connection if "Connection: Keep-alive" is not present
+            break;
+        }
+    }
+    //echo(connfd);
     close(connfd);
     return NULL;
 }
@@ -98,7 +125,7 @@ void serve_file(int connfd, const char *filename, int postActive) {
     }
 
     // Send an HTTP 200 OK response with the correct Content-Type
-    sprintf(httpmsg, "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\n\r\n", content_type, filestat.st_size);
+    sprintf(httpmsg, "HTTP/1.1 200 OK\r\nContent-Type: %s\r\nContent-Length: %ld\r\nConnection: Close\r\n\r\n", content_type, filestat.st_size);
     write(connfd, httpmsg, strlen(httpmsg));
     
     // POST only
@@ -149,17 +176,17 @@ void serve_file(int connfd, const char *filename, int postActive) {
 /*
  * echo - read and echo text lines until client closes connection
  */
-void echo(int connfd) 
+void echo(int connfd, char *buf, size_t n) 
 {
-    size_t n; 
-    char buf[MAXLINE]; 
+    
+    // char buf[MAXLINE]; 
     // char httpmsg[]="HTTP/1.1 200 Document Follows\r\nContent-Type:text/html\r\nContent-Length:32\r\n\r\n<html><h1>Hello CSCI4273 Course!</h1>"; 
     char httpmsg[MAXBUF];
     struct stat filestat;
     char request_uri[MAXLINE];
     int postActive = -1;
 
-    n = read(connfd, buf, MAXLINE);
+    //n = read(connfd, buf, MAXLINE);
     printf("server received the following request:\n%s\n",buf);
     if (n <= 0) {
         return;
